@@ -1,0 +1,110 @@
+name: Compile Targets
+
+on:
+  push:
+    paths:
+      - 'Target-Rust/**'
+      - 'Target-Cpp/**'
+      - 'Target-Java/**'
+      - '.github/workflows/compile.yml'
+  pull_request:
+    paths:
+      - 'Target-Rust/**'
+      - 'Target-Cpp/**'
+      - 'Target-Java/**'
+      - '.github/workflows/compile.yml'
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      cpp: ${{ steps.filter.outputs.cpp }}
+      java: ${{ steps.filter.outputs.java }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Manual runs / workflow edits rebuild everything (see the `if` conditions below)
+          filters: |
+            rust:
+              - 'Target-Rust/**'
+            cpp:
+              - 'Target-Cpp/**'
+            java:
+              - 'Target-Java/**'
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile Rust
+        run: |
+          mkdir -p build/rust
+          cd Target-Rust
+          if [ -f Cargo.toml ]; then
+            cargo build --release
+            # Copy the produced executables/libraries into build/
+            find target/release -maxdepth 1 -type f \( -perm -u+x -o -name '*.so' -o -name '*.a' \) \
+              -exec cp {} ../build/rust/ \;
+          else
+            for f in *.rs; do
+              [ -e "$f" ] || continue
+              rustc -O "$f" -o "../build/rust/${f%.rs}"
+            done
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-build
+          path: build/rust/
+          if-no-files-found: error
+
+  cpp:
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile C++
+        run: |
+          mkdir -p build/cpp
+          if [ -f Target-Cpp/CMakeLists.txt ]; then
+            cmake -S Target-Cpp -B build/cpp/_cmake -DCMAKE_BUILD_TYPE=Release
+            cmake --build build/cpp/_cmake --parallel
+            cp -r build/cpp/_cmake/. build/cpp/ 2>/dev/null || true
+            rm -rf build/cpp/_cmake
+          else
+            find Target-Cpp -name '*.cpp' | xargs g++ -std=c++17 -O2 -Wall -o build/cpp/app
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpp-build
+          path: build/cpp/
+          if-no-files-found: error
+
+  java:
+    needs: changes
+    if: needs.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile Java
+        run: |
+          mkdir -p build/java
+          find Target-Java -name '*.java' > sources.txt
+          javac -d build/java @sources.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-build
+          path: build/java/
+          if-no-files-found: error
+          
